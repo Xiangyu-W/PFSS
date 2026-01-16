@@ -1,0 +1,9 @@
+name: sunpy_7
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - sunpy
+  - ipykernel
+  - sunkit-magex
+prefix: /Users/xwu/opt/miniconda3/envs/sunpy_7
