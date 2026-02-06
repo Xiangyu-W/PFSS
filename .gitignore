@@ -1,3 +1,25 @@
+# 忽略数据
 data/
 results/
+
+# 忽略图片、二进制文件
+*.cdf
+*.png
+*.jpg
+*.pdf
+*.npy
+*.npz
+*.h5
+*.pkl
+*.pickle
+*.sav
+*.mat
+
+# 忽略临时文件和缓存
+__pycache__/
+*.log
+*.tmp
+.DS_Store
+
+# Notebook checkpoints
 .ipynb_checkpoints/
