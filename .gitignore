@@ -33,3 +33,9 @@ env/
 # ===== Python tooling cache =====
 .pytest_cache/
 .mypy_cache/
+
+# ===== Local tooling / scratch =====
+.claude/
+trash/
+test_code/adapt_cache/
+test_code/mct_output/
