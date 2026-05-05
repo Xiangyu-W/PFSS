@@ -1,0 +1,49 @@
+# pfss_pipeline example config.
+# Required keys are marked.
+# `dem.roi` and `dem.region_type` should be filled in AFTER stage_irap_fetch
+# produces the footpoint figure (two-pass workflow).
+
+# REQUIRED
+irap:
+  spacecraft: SOLO                                 # REQUIRED
+  spacecraft_time: '2022-03-09T12:00:00'           # REQUIRED, ISO UTC SC time
+  coronal_model: ADAPT
+  mode: SUNTIME
+  realization_adapt: 0
+  prob_threshold_pct: 60
+  carrington_roi: {lon: [10, 100], lat: [-60, 30]}
+  adapt_cache_dir: /disk/plasma/xw2/PFSS/data/adapt_gong
+  selenium_chrome_binary: /usr/bin/google-chrome
+
+results_root: /disk/plasma/xw2/PFSS/results        # REQUIRED
+aia_data_dir: /disk/plasma/xw2/sunpy/data
+aia_prep_dir: /disk/plasma/xw2/sunpy/data/aia_prep
+
+aia:
+  wavelengths: ['94', '131', '171', '193', '211', '335']
+  jsoc_notify: xiangyu.wu.23@ucl.ac.uk
+  do_psf_deconvolve: true
+  pointing_window_hours: 12
+  diagnostic_dpi: 200
+
+# FILL THESE AFTER stage_irap_fetch
+dem:
+  roi:
+    bottom_left_arcsec: null   # e.g. [220, -300]
+    top_right_arcsec: null     # e.g. [900, 300]
+  region_type: null            # 'CH' | 'AR' | 'custom'
+  logT_range: null             # only used when region_type='custom'
+  bin_width: 0.1
+  match_tolerance_min: 5
+  gaussian_prior: {amp: 4.0e22, center: 6.5, sigma: 0.15}
+  clip_negative: true
+  fill_nan: linear
+
+extract:
+  hull_method: convex
+  overlay_aia_wavelength: '193'
+
+plots:
+  dpi: 300
+runtime:
+  log_level: INFO
