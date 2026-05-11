@@ -12,7 +12,7 @@ from pfss_pipeline import config as cfg_mod
 from pfss_pipeline import manifest as mfst
 from pfss_pipeline.paths import OutputLayout
 
-STAGES = ("irap", "aia", "dem", "extract", "all-after-roi")
+STAGES = ("irap", "aia-fetch", "aia-prep", "aia", "dem", "extract", "all-after-roi")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,9 +66,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.stage == "irap":
         from pfss_pipeline.stages import irap_fetch
         irap_fetch.run(cfg, layout, force=_force_for("irap", args))
-    elif args.stage == "aia":
+    elif args.stage == "aia-fetch":
+        _require_target_time(layout)
+        from pfss_pipeline.stages import aia_fetch
+        aia_fetch.run(cfg, layout, force=_force_for("aia-fetch", args))
+    elif args.stage == "aia-prep":
         _require_target_time(layout)
         from pfss_pipeline.stages import aia_prep
+        aia_prep.run(cfg, layout, force=_force_for("aia-prep", args))
+    elif args.stage == "aia":
+        _require_target_time(layout)
+        from pfss_pipeline.stages import aia_fetch, aia_prep
+        aia_fetch.run(cfg, layout, force=_force_for("aia", args))
         aia_prep.run(cfg, layout, force=_force_for("aia", args))
     elif args.stage == "dem":
         _require_target_time(layout)
@@ -83,8 +92,9 @@ def main(argv: list[str] | None = None) -> int:
     elif args.stage == "all-after-roi":
         cfg_mod.assert_dem_ready(cfg)
         _require_target_time(layout)
-        from pfss_pipeline.stages import aia_prep, dem, extract
-        aia_prep.run(cfg, layout, force=_force_for("aia", args))
+        from pfss_pipeline.stages import aia_fetch, aia_prep, dem, extract
+        aia_fetch.run(cfg, layout, force=_force_for("aia-fetch", args))
+        aia_prep.run(cfg, layout, force=_force_for("aia-prep", args))
         dem.run(cfg, layout, force=_force_for("dem", args))
         extract.run(cfg, layout, force=_force_for("extract", args))
 

@@ -95,13 +95,15 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
     log.info("ADAPT matched %s (Δt = %+.2f h)", matched_dt,
              (pfss_time_dt - matched_dt).total_seconds() / 3600.0)
 
-    # ---- 5. Derive target_time = ADAPT map date -----------------------
-    target_time = Time(adapt_map.date)
+    # ---- 5. Derive target_time = date_surf rounded to the minute ------
+    # AIA cadence is seconds; rounding to minute is plenty precise and avoids
+    # silly sub-second noise in filenames.
+    target_time = Time(pfss_time_dt.replace(second=0, microsecond=0))
     layout.target_time = target_time
-    log.info("derived target_time = %s", target_time.iso)
+    log.info("derived target_time = %s (from date_surf, minute precision)", target_time.iso)
 
     # ---- 6. Build footpoint SkyCoords ---------------------------------
-    sw_type = fp_mod.select_sw_type(foot_solarsurf_df)
+    sw_type = fp_mod.select_sw_type(foot_solarsurf_df, fallback=ir.get("sw_type"))
     type_df = foot_solarsurf_df[foot_solarsurf_df["type"] == sw_type]
     irap_foot = fp_mod.make_skycoord_carr(
         type_df, obstime=params["metadata"]["date_surf"],

@@ -17,6 +17,9 @@ DEFAULTS: dict = {
         "carrington_roi": {"lon": [10, 100], "lat": [-60, 30]},
         "adapt_cache_dir": "/disk/plasma/xw2/PFSS/data/adapt_gong",
         "selenium_chrome_binary": "/usr/bin/google-chrome",
+        # Manual sw_type override; required only when 'M' is absent from the
+        # IRAP solarsurf footpoints (e.g. set to 'SSW' in the event YAML).
+        "sw_type": None,
     },
     "results_root": None,
     "aia_data_dir": "/disk/plasma/xw2/sunpy/data",

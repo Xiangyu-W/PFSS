@@ -39,3 +39,4 @@ env/
 trash/
 test_code/adapt_cache/
 test_code/mct_output/
+configs/

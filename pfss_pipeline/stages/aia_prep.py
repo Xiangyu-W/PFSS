@@ -1,4 +1,8 @@
-"""stage_aia_prep: AIA Level 1 → calibrated prepared FITS, one per wavelength."""
+"""stage_aia_prep: PSF deconvolve / register / degradation-correct AIA L1.
+
+Reads the L1 paths from `manifest.stages.aia_fetch`; run --stage aia-fetch
+first if that entry is missing.
+"""
 from __future__ import annotations
 
 import glob
@@ -13,12 +17,36 @@ from astropy.time import Time
 from aiapy.calibrate.utils import get_correction_table, get_pointing_table
 from sunpy.map import Map
 
-from pfss_pipeline import io_utils, manifest as mfst
-from pfss_pipeline.aia import fetch as fetch_mod
+from pfss_pipeline import manifest as mfst
 from pfss_pipeline.aia import plots as plots_mod
 from pfss_pipeline.aia import prep as prep_mod
 
 log = logging.getLogger(__name__)
+
+
+def _verify_prep_drift(paths: dict[str, str | Path], target_time: Time,
+                       max_drift_s: float) -> None:
+    """Raise if any prep file's filename time deviates from target_time by > max_drift_s.
+
+    Guards against stale manifest entries (from past runs with a different target_time
+    or wrong data_surf) sneaking past the skip-if-exists check.
+    """
+    target_dt = datetime.strptime(target_time.iso[:19], "%Y-%m-%d %H:%M:%S")
+    bad: list[tuple[str, str, float]] = []
+    for wl, p in paths.items():
+        mt = re.search(r"(\d{8})_(\d{6})\.fits$", str(p))
+        if not mt:
+            continue
+        ft = datetime.strptime(mt.group(1) + mt.group(2), "%Y%m%d%H%M%S")
+        d = abs((ft - target_dt).total_seconds())
+        if d > max_drift_s:
+            bad.append((wl, str(p), d))
+    if bad:
+        details = "; ".join(f"{wl}={os.path.basename(p)} ({d:.0f}s)" for wl, p, d in bad)
+        raise RuntimeError(
+            f"aia_prep file time drift > {max_drift_s:.0f}s from target_time "
+            f"{target_time.iso}: {details}. Re-run with --force to regenerate."
+        )
 
 
 def _find_existing_prep(prep_dir: Path, wl: str, target_time: Time,
@@ -55,6 +83,8 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
     needed = [wl for wl in wavelengths if force or existing[wl] is None]
 
     if not needed:
+        _verify_prep_drift({wl: existing[wl] for wl in wavelengths},
+                           layout.target_time, tol_min * 60)
         log.info("all %d wavelengths already prepped within %.1f min; skipping",
                  len(wavelengths), tol_min)
         result = {wl: existing[wl] for wl in wavelengths}
@@ -67,10 +97,16 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
     log.info("preparing %d wavelengths: %s (existing: %s)",
              len(needed), needed, [wl for wl in wavelengths if existing[wl]])
 
-    # ---- 2. Resolve L1 files (local first; JSOC fallback) ----
-    local_files = fetch_mod.find_local_or_fetch(
-        layout.target_time, needed, cfg["aia_data_dir"], aia_cfg.get("jsoc_notify"),
-    )
+    # ---- 2. Read L1 paths from manifest (set by aia_fetch stage) ----
+    m = mfst.read(layout.manifest_path)
+    l1_payload = m.get("stages", {}).get("aia_fetch", {})
+    missing_l1 = [wl for wl in needed if wl not in l1_payload]
+    if missing_l1:
+        raise RuntimeError(
+            f"L1 paths missing in manifest for {missing_l1}; "
+            "run --stage aia-fetch first"
+        )
+    local_files = {wl: l1_payload[wl] for wl in needed}
 
     # ---- 3. Build pointing + correction tables once ----
     sample = Map(local_files[needed[0]])
@@ -104,6 +140,7 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
 
     # ---- 5. Manifest ----
     final = {wl: (new_paths.get(wl) or existing[wl]) for wl in wavelengths}
+    _verify_prep_drift(final, layout.target_time, tol_min * 60)
     payload = {wl: str(final[wl]) for wl in wavelengths}
     payload.update({"images_dir": str(layout.aia_prep_images_dir), "do_psf": do_psf})
     mfst.update_stage(layout.manifest_path, "aia_prep", payload)

@@ -19,24 +19,30 @@ def _parse_l1_time(f: str) -> datetime:
     return datetime.strptime(ts, "%Y-%m-%dT%H%M%SZ")
 
 
-def find_local(target_time: Time, wavelengths: list[str], data_dir: str | Path,
-              tolerance_seconds: float = 120.0) -> dict[str, str]:
-    """Glob all aia.lev1_euv_12s files for each wavelength; pick the one closest to target_time.
+def find_local(target_time: Time, wavelengths: list[str],
+              data_dir: str | Path) -> dict[str, str]:
+    """Match local AIA L1 by minute-prefix glob, closest second wins.
 
-    Uses a ±tolerance_seconds window to catch exposures that straddle a minute boundary
-    (e.g. raw exposed at 13:59:59 for a 14:00 target).
+    Mirrors src/AIA_prep_all.ipynb cell 2: pattern is
+    `aia.lev1_euv_12s.{YYYY-MM-DDTHHMM}*.{wl}.image_lev1.fits`. AIA cadence
+    is 12 s, so a hit minute usually has 5 candidates; we pick the closest
+    in seconds. No cross-minute fallback — if the minute is empty, JSOC
+    fetch covers it.
     """
     target_dt = datetime.strptime(target_time.iso[:19], "%Y-%m-%d %H:%M:%S")
+    minute_str = target_time.iso[:16].replace(":", "").replace(" ", "T")  # e.g. 2022-02-28T0502
     out: dict[str, str] = {}
     for wl in wavelengths:
-        candidates = sorted(glob.glob(os.path.join(str(data_dir),
-                                                  f"aia.lev1_euv_12s.*.{wl}.image_lev1.fits")))
+        pattern = os.path.join(str(data_dir),
+                              f"aia.lev1_euv_12s.{minute_str}*.{wl}.image_lev1.fits")
+        candidates = sorted(glob.glob(pattern))
         if not candidates:
             continue
-        best = min(candidates, key=lambda f: abs((_parse_l1_time(f) - target_dt).total_seconds()))
-        delta = abs((_parse_l1_time(best) - target_dt).total_seconds())
-        if delta <= tolerance_seconds:
-            out[wl] = best
+        if len(candidates) == 1:
+            out[wl] = candidates[0]
+        else:
+            out[wl] = min(candidates,
+                          key=lambda f: abs((_parse_l1_time(f) - target_dt).total_seconds()))
     return out
 
 

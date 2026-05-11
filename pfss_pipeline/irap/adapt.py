@@ -165,35 +165,26 @@ def _scan_cache(cache_dir: str | Path) -> list[tuple]:
     return out
 
 
-def find_closest_adapt(base_url: str, target_dt: datetime, cache_dir: str | Path,
-                       cache_tolerance_hours: float = 24.0) -> tuple:
+def find_closest_adapt(base_url: str, target_dt: datetime, cache_dir: str | Path) -> tuple:
     """Return (matched_dt, local_path, fname, source).
 
-    Strategy:
-      1. scan `cache_dir` for ADAPT files; if the closest is within
-         `cache_tolerance_hours`, use it (no network).
-      2. else hit gong.nso.edu listing (with retries) to find + download.
-
-    `source` is either a remote URL (if downloaded) or 'cache' (if hit step 1).
+    Always queries GONG to identify the actual closest ADAPT map to
+    `target_dt` (matches the original notebook IRAP汇总.ipynb logic).
+    `download_adapt` reuses the file from `cache_dir` if already present, so
+    repeated calls don't re-download. Only falls back to closest cached file
+    when GONG is unreachable.
     """
-    cache_hits = _scan_cache(cache_dir)
-    if cache_hits:
-        nearest = min(cache_hits, key=lambda x: abs((x[0] - target_dt).total_seconds()))
-        dt_hours = abs((nearest[0] - target_dt).total_seconds()) / 3600.0
-        if dt_hours <= cache_tolerance_hours:
-            log.info("ADAPT from cache: %s (Δt=%+.2f h)", nearest[1], dt_hours)
-            return nearest[0], nearest[2], nearest[1], "cache"
-
     try:
         files = list_adapt_files(base_url, target_dt.year)
         if target_dt.month == 1:
             files = list_adapt_files(base_url, target_dt.year - 1) + files
     except requests.RequestException as exc:
-        if cache_hits:
-            log.warning("GONG listing failed (%s); falling back to closest cached file", exc)
-            nearest = min(cache_hits, key=lambda x: abs((x[0] - target_dt).total_seconds()))
-            return nearest[0], nearest[2], nearest[1], "cache"
-        raise
+        log.warning("GONG listing failed (%s); falling back to closest cached file", exc)
+        cache_hits = _scan_cache(cache_dir)
+        if not cache_hits:
+            raise RuntimeError("GONG unreachable and ADAPT cache is empty") from exc
+        nearest = min(cache_hits, key=lambda x: abs((x[0] - target_dt).total_seconds()))
+        return nearest[0], nearest[2], nearest[1], "cache"
     if not files:
         raise RuntimeError("no ADAPT GONG files found; check network access to gong.nso.edu")
     matched = min(files, key=lambda x: abs((x[0] - target_dt).total_seconds()))

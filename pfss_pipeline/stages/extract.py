@@ -40,12 +40,52 @@ log = logging.getLogger(__name__)
 
 SUMMARY_COLUMNS = [
     "event_id", "sc_time_utc", "target_time_utc", "spacecraft", "coronal_model", "mode",
-    "region_type", "roi_blx", "roi_bly", "roi_trx", "roi_try",
+    "region_type", "logT_range", "roi_blx", "roi_bly", "roi_trx", "roi_try",
     "prob_threshold_pct", "n_dominant_footpoints",
     "hull_npix_total", "hull_npix_valid", "hull_npix_nan",
     "T_mean_hull_avg",
     "completed_at",
 ]
+
+# Identity of a "run result" for upsert purposes. Two rows sharing all these
+# values represent the same configuration; the later one supersedes.
+SUMMARY_KEY_COLS = [
+    "event_id", "target_time_utc", "spacecraft", "coronal_model", "mode",
+    "region_type", "logT_range",
+    "roi_blx", "roi_bly", "roi_trx", "roi_try", "prob_threshold_pct",
+]
+
+
+def _degenerate_hull_mask(hull_lons: np.ndarray, hull_lats: np.ndarray,
+                          T_mean_carr) -> np.ndarray:
+    """Rasterize a degenerate (1- or 2-point) hull onto T_mean_carr's pixel grid.
+
+    1 point  -> the single pixel containing it.
+    2 points -> all pixels traversed by the segment connecting them (linspace+round
+                at 2x segment-pixel-length sample density, which fills every pixel
+                on the line for axis-aligned and diagonal cases).
+    """
+    n_unique = len(hull_lons) - 1  # closed polygon: last == first
+    sky = SkyCoord(hull_lons[:n_unique] * u.deg, hull_lats[:n_unique] * u.deg,
+                   frame=T_mean_carr.coordinate_frame)
+    px_x, px_y = T_mean_carr.wcs.world_to_pixel(sky)
+    ny, nx = T_mean_carr.data.shape
+    mask = np.zeros((ny, nx), dtype=bool)
+    if n_unique == 1:
+        ix, iy = int(round(float(px_x[0]))), int(round(float(px_y[0])))
+        if 0 <= ix < nx and 0 <= iy < ny:
+            mask[iy, ix] = True
+        return mask
+    # n_unique == 2: rasterize segment
+    seg_len_px = float(np.hypot(px_x[1] - px_x[0], px_y[1] - px_y[0]))
+    n_samples = max(int(seg_len_px * 2) + 1, 2)
+    xs = np.linspace(px_x[0], px_x[1], n_samples)
+    ys = np.linspace(px_y[0], px_y[1], n_samples)
+    ix = np.round(xs).astype(int)
+    iy = np.round(ys).astype(int)
+    keep = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny)
+    mask[iy[keep], ix[keep]] = True
+    return mask
 
 
 def _resolve_overlay_roi(cfg: dict, hull_lons: np.ndarray, hull_lats: np.ndarray) -> tuple:
@@ -60,26 +100,48 @@ def _resolve_overlay_roi(cfg: dict, hull_lons: np.ndarray, hull_lats: np.ndarray
             float(hull_lats.min() - pad), float(hull_lats.max() + pad))
 
 
+def _archive_if_schema_mismatch(csv_path) -> None:
+    if not csv_path.exists():
+        return
+    with open(csv_path) as fh:
+        first_line = fh.readline().rstrip("\n")
+    if first_line.split(",") != SUMMARY_COLUMNS:
+        archive = csv_path.with_suffix(
+            f".old-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}.csv"
+        )
+        csv_path.rename(archive)
+        log.info("schema mismatch in %s; archived old file -> %s", csv_path.name, archive)
+
+
 def _append_summary_row(csv_path, row: dict) -> None:
-    """Append `row` to summary CSV. If the existing header doesn't match the current
-    schema, rotate it aside so the new file starts clean."""
+    """Append-only history CSV. Every rerun adds a row."""
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    if csv_path.exists():
-        with open(csv_path) as fh:
-            first_line = fh.readline().rstrip("\n")
-        existing_cols = first_line.split(",")
-        if existing_cols != SUMMARY_COLUMNS:
-            archive = csv_path.with_suffix(
-                f".old-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}.csv"
-            )
-            csv_path.rename(archive)
-            log.info("schema mismatch in summary CSV; archived old file -> %s", archive)
+    _archive_if_schema_mismatch(csv_path)
     write_header = not csv_path.exists()
     with open(csv_path, "a", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=SUMMARY_COLUMNS)
         if write_header:
             writer.writeheader()
         writer.writerow({k: row.get(k, "") for k in SUMMARY_COLUMNS})
+
+
+def _upsert_summary_row(csv_path, row: dict) -> None:
+    """Upsert `row` into latest CSV keyed by SUMMARY_KEY_COLS. Existing rows
+    matching the key are replaced; all others are preserved."""
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    _archive_if_schema_mismatch(csv_path)
+    existing: list[dict] = []
+    if csv_path.exists():
+        with open(csv_path, newline="") as fh:
+            existing = list(csv.DictReader(fh))
+    key_vals = tuple(str(row.get(k, "")) for k in SUMMARY_KEY_COLS)
+    kept = [r for r in existing if tuple(str(r.get(k, "")) for k in SUMMARY_KEY_COLS) != key_vals]
+    kept.append({k: row.get(k, "") for k in SUMMARY_COLUMNS})
+    with open(csv_path, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=SUMMARY_COLUMNS)
+        writer.writeheader()
+        for r in kept:
+            writer.writerow({k: r.get(k, "") for k in SUMMARY_COLUMNS})
 
 
 def run(cfg: dict, layout, force: bool = False) -> dict:
@@ -94,6 +156,7 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
         "T_in_hull_npz": layout.extract_t_in_hull_npz(),
         "overlay_png": layout.extract_overlay_png(),
         "summary_csv": layout.extract_summary_csv,
+        "summary_csv_latest": layout.extract_summary_csv_latest,
     }
 
     # ---- 1. Load DEM products + dominant footpoints + AIA prep + ADAPT --------
@@ -159,6 +222,13 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
     world = T_mean_carr.wcs.pixel_to_world(x_idx.ravel(), y_idx.ravel())
     T_pix_lonlat = np.column_stack([world.lon.deg, world.lat.deg])
     inside_mask = hull_path.contains_points(T_pix_lonlat).reshape(ny_t, nx_t)
+    n_unique_hull = len(hull_lons) - 1
+    if n_unique_hull < 3:
+        # Degenerate hull (point or line has zero area): rasterize the segment/point.
+        inside_mask = _degenerate_hull_mask(hull_lons, hull_lats, T_mean_carr)
+        log.warning("only %d dominant footpoint(s); using degenerate %s mask (%d px)",
+                    n_unique_hull, "point" if n_unique_hull == 1 else "segment",
+                    int(inside_mask.sum()))
 
     # Use the interpolated T_mean (NaN-filled in the dem stage) so the hull
     # stats match the prototype notebook. Pixels still NaN here are off-ROI.
@@ -222,7 +292,9 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
     plt.close(fig)
     log.info("saved overlay %s", out["overlay_png"])
 
-    # ---- 7. Append summary CSV ---------------------------------------------
+    # ---- 7. Summary CSVs: append-only history + upsert latest --------------
+    logt = cfg["dem"].get("logT_range")
+    logt_str = f"{float(logt[0]):.2f}-{float(logt[1]):.2f}" if logt else ""
     row = {
         "event_id": layout.event_id,
         "sc_time_utc": cfg["irap"]["spacecraft_time"],
@@ -231,6 +303,7 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
         "coronal_model": cfg["irap"]["coronal_model"],
         "mode": cfg["irap"]["mode"],
         "region_type": cfg["dem"]["region_type"],
+        "logT_range": logt_str,
         "roi_blx": roi["bottom_left_arcsec"][0],
         "roi_bly": roi["bottom_left_arcsec"][1],
         "roi_trx": roi["top_right_arcsec"][0],
@@ -244,8 +317,9 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
         "completed_at": datetime.now(timezone.utc).isoformat(),
     }
     _append_summary_row(out["summary_csv"], row)
-    log.info("appended summary row -> %s (T_mean_hull_avg=%.4g K)",
-             out["summary_csv"], T_mean_hull_avg)
+    _upsert_summary_row(out["summary_csv_latest"], row)
+    log.info("appended history -> %s; upserted latest -> %s (T_mean_hull_avg=%.4g K)",
+             out["summary_csv"], out["summary_csv_latest"], T_mean_hull_avg)
 
     mfst.update_stage(layout.manifest_path, "extract",
                      {**{k: str(v) for k, v in out.items()}, **row})

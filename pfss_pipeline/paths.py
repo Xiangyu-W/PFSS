@@ -126,6 +126,10 @@ class OutputLayout:
     def extract_summary_csv(self) -> Path:
         return self.extract_dir / "footpoint_temperature_summary.csv"
 
+    @property
+    def extract_summary_csv_latest(self) -> Path:
+        return self.extract_dir / "footpoint_temperature_summary_latest.csv"
+
     def ensure_dirs(self) -> None:
         for d in [
             self.event_dir,

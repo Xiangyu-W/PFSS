@@ -15,9 +15,19 @@ from sunpy.coordinates import HeliographicCarrington, HeliographicStonyhurst, Ro
 log = logging.getLogger(__name__)
 
 
-def select_sw_type(foot_df: pd.DataFrame) -> str:
-    """Prefer 'M' if any M points exist; otherwise 'SSW'."""
-    return "M" if "M" in foot_df["type"].values else "SSW"
+def select_sw_type(foot_df: pd.DataFrame, fallback: str | None = None) -> str:
+    """Prefer 'M' if any M-type rows exist. Otherwise require an explicit fallback
+    (set via `irap.sw_type` in the event YAML); raise if missing.
+    """
+    if "M" in foot_df["type"].values:
+        return "M"
+    if fallback:
+        return fallback
+    available = sorted(set(foot_df["type"].values))
+    raise ValueError(
+        f"no 'M' type in IRAP solarsurf footpoints; available types: {available}; "
+        "set irap.sw_type in the event YAML"
+    )
 
 
 def filter_dominant(foot_df: pd.DataFrame, sw_type: str, prob_threshold_pct: float = 60.0) -> pd.DataFrame:
@@ -44,12 +54,20 @@ def diff_rotate(coord: SkyCoord, rotated_time) -> SkyCoord:
 
 
 def convex_hull_polygon(coord: SkyCoord) -> tuple[np.ndarray, np.ndarray]:
-    """Return (hull_lons_closed, hull_lats_closed) where the polygon is closed."""
+    """Return (hull_lons_closed, hull_lats_closed) where the polygon is closed.
+
+    For <3 points the hull is degenerate (point or line). We return the input
+    points closed to themselves; downstream `Path.contains_points` then yields
+    an empty mask, which is the correct geometry — a 0- or 1-D hull has no area.
+    """
     lons = coord.lon.deg
     lats = coord.lat.deg
-    hull = ConvexHull(np.column_stack([lons, lats]))
-    hull_lons = np.append(lons[hull.vertices], lons[hull.vertices[0]])
-    hull_lats = np.append(lats[hull.vertices], lats[hull.vertices[0]])
+    if len(lons) == 0:
+        raise ValueError("convex_hull_polygon: no points")
+    verts = ConvexHull(np.column_stack([lons, lats])).vertices if len(lons) >= 3 \
+            else np.arange(len(lons))
+    hull_lons = np.append(lons[verts], lons[verts[0]])
+    hull_lats = np.append(lats[verts], lats[verts[0]])
     return hull_lons, hull_lats
 
 
