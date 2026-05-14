@@ -42,7 +42,6 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
 
     layout.ensure_dirs()
     irap_dir = layout.irap_dir
-    fig_dir = layout.irap_figures_dir
 
     # ---- 1. ZIP (cache or fetch) ---------------------------------------
     zip_files = mct.cached_zip_or_fetch(
@@ -127,15 +126,20 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
         irap_hcs_diffrot = fp_mod.diff_rotate(irap_hcs, rotated_time=adapt_map.date)
 
     # ---- 7. Save figures (full + submap) ------------------------------
-    fig_full = layout.irap_figures_dir / "footpoints_on_ADAPT_full.png"
-    fig_sub = layout.irap_figures_dir / "footpoints_on_ADAPT_submap.png"
+    # Aggregated under results_root/figures_for_roi/irap/ so all events'
+    # ROI-helper figures sit in one place; per-event dirs no longer hold
+    # these PNGs.
+    fig_full = layout.irap_footpoints_full_path
+    fig_sub = layout.irap_footpoints_submap_path
+    suntime = params["metadata"]["date_surf"]
     if force or not fig_full.exists():
         fig = overlay.plot_footpoints_on_adapt(
             adapt_map, irap_foot_diffrot, type_df["prob"].values,
             hcs_diffrot=irap_hcs_diffrot,
-            title=f"{ir['spacecraft']} IRAP {ir['coronal_model']} footpoints @ {date_str}T{time_str}",
+            title=(f"{ir['spacecraft']} IRAP {ir['coronal_model']} footpoints "
+                   f"@ {date_str}T{time_str}\nsuntime: {suntime}"),
         )
-        fig.savefig(fig_full, dpi=cfg["plots"]["dpi"], bbox_inches="tight")
+        fig.savefig(fig_full, dpi=200, bbox_inches="tight")
         plt.close(fig)
         log.info("saved %s", fig_full)
     if force or not fig_sub.exists():
@@ -143,9 +147,10 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
             adapt_map, irap_foot_diffrot, type_df["prob"].values,
             hcs_diffrot=irap_hcs_diffrot,
             carrington_roi=ir["carrington_roi"],
-            title=f"{ir['spacecraft']} IRAP {ir['coronal_model']} footpoints (submap)",
+            title=(f"{ir['spacecraft']} IRAP {ir['coronal_model']} footpoints (submap) "
+                   f"@ {date_str}T{time_str}\nsuntime: {suntime}"),
         )
-        fig.savefig(fig_sub, dpi=cfg["plots"]["dpi"], bbox_inches="tight")
+        fig.savefig(fig_sub, dpi=200, bbox_inches="tight")
         plt.close(fig)
         log.info("saved %s", fig_sub)
 

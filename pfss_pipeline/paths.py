@@ -26,8 +26,30 @@ class OutputLayout:
         return event_id(self.cfg)
 
     @property
+    def event_short_id(self) -> str:
+        """`{spacecraft}_{spacecraft_time}` — used for ROI-helper figure filenames."""
+        sct = Time(self.cfg["irap"]["spacecraft_time"]).strftime("%Y%m%dT%H%M%S")
+        return f"{self.cfg['irap']['spacecraft']}_{sct}"
+
+    @property
     def event_dir(self) -> Path:
         return Path(self.cfg["results_root"]) / self.event_id
+
+    # ---- Cross-event ROI-helper figure aggregation ----
+    @property
+    def figures_for_roi_dir(self) -> Path:
+        return Path(self.cfg["results_root"]) / "figures_for_roi"
+
+    @property
+    def irap_footpoints_full_path(self) -> Path:
+        return self.figures_for_roi_dir / "irap" / f"{self.event_short_id}_footpoints_on_ADAPT_full.png"
+
+    @property
+    def irap_footpoints_submap_path(self) -> Path:
+        return self.figures_for_roi_dir / "irap" / f"{self.event_short_id}_footpoints_on_ADAPT_submap.png"
+
+    def aia_fulldisk_for_roi_path(self, wl: str) -> Path:
+        return self.figures_for_roi_dir / "aia" / f"{self.event_short_id}_{wl}A.png"
 
     @property
     def manifest_path(self) -> Path:
@@ -137,9 +159,10 @@ class OutputLayout:
             self.aia_prep_images_dir,
             self.irap_dir,
             self.irap_zip_dir,
-            self.irap_figures_dir,
             self.dem_dir,
             self.dem_figures_dir,
             self.extract_dir,
+            self.figures_for_roi_dir / "irap",
+            self.figures_for_roi_dir / "aia",
         ]:
             d.mkdir(parents=True, exist_ok=True)

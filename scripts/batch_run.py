@@ -23,6 +23,7 @@ import argparse
 import copy
 import logging
 import os
+import re
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,6 +36,11 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_DIR = REPO_ROOT / "configs"
 TEMPLATE = CONFIG_DIR / "event_2022-03-03.yaml"
+
+# Run from a script dir, so `pfss_pipeline` isn't on sys.path by default;
+# add REPO_ROOT so helpers in this file can `import pfss_pipeline.*`.
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 START = "2022-03-02 06:00"
 END = "2022-03-07 00:00"
@@ -116,11 +122,51 @@ def _run_one(stage: str, idx: int, total: int, t: pd.Timestamp,
     if force:
         cmd.append("--force")
     log.info("[%d/%d] START %s -> %s", idx, total, cfg.name, log_path.name)
-    with open(log_path, "w") as fh:
-        fh.write(f"# cmd: {' '.join(cmd)}\n# cwd: {REPO_ROOT}\n# started: {ts}\n\n")
+    with open(log_path, "wb") as fh:
+        fh.write(f"# cmd: {' '.join(cmd)}\n# cwd: {REPO_ROOT}\n# started: {ts}\n\n".encode())
         fh.flush()
-        rc = subprocess.run(cmd, cwd=REPO_ROOT, env=env, stdout=fh, stderr=subprocess.STDOUT).returncode
+        proc = subprocess.Popen(cmd, cwd=REPO_ROOT, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+        _stream_with_progress(proc, fh, idx, total, cfg.stem)
+        rc = proc.wait()
     return (t, rc, str(log_path))
+
+
+_PCT_RE = re.compile(rb"\b(\d{1,3})%\|")
+
+
+def _stream_with_progress(proc: subprocess.Popen, fh, idx: int, total: int,
+                          event_name: str) -> None:
+    """Mirror subprocess bytes to `fh`; surface tqdm %-progress to the batch log.
+
+    tqdm refreshes its bar with `\\r` (no newline), so reading by line would
+    buffer until each bar completes. We read raw chunks, write them verbatim
+    to the per-event log file, and split on `\\r|\\n` to scan for `\\d+%|`
+    tokens. One INFO line is emitted each time the percentage crosses a new
+    10% checkpoint, so 8 parallel events stay readable in the terminal.
+    """
+    last_checkpoint = -10
+    buf = bytearray()
+    while True:
+        chunk = proc.stdout.read(1024)
+        if not chunk:
+            break
+        fh.write(chunk)
+        fh.flush()
+        buf.extend(chunk)
+        tokens = re.split(rb"[\r\n]", bytes(buf))
+        buf = bytearray(tokens[-1])
+        for tok in tokens[:-1]:
+            m = _PCT_RE.search(tok)
+            if not m:
+                continue
+            pct = int(m.group(1))
+            if pct > 100:
+                continue
+            checkpoint = pct - (pct % 10)
+            if checkpoint > last_checkpoint:
+                last_checkpoint = checkpoint
+                log.info("[%d/%d] %s DEM %3d%%", idx, total, event_name, pct)
 
 
 def _select_times(start: int, end: int | None,
@@ -190,31 +236,38 @@ def _save_aia_preview(t: pd.Timestamp, wavelength: str) -> Path:
     from astropy import units as u
     from sunpy.map import Map
 
+    from pfss_pipeline.paths import OutputLayout
+
     cfg_path = cfg_path_for(t)
     cfg = yaml.safe_load(cfg_path.read_text())
-    results_root = Path(cfg.get("results_root") or REPO_ROOT / "results")
+    if not cfg.get("results_root"):
+        cfg["results_root"] = str(REPO_ROOT / "results")
+    layout = OutputLayout(cfg)
 
-    manifest_paths = sorted(results_root.glob(f"*{t:%Y%m%dT%H%M}*/run_manifest.yaml"))
-    if not manifest_paths:
-        raise FileNotFoundError(f"no run_manifest for {t}")
-    mf = yaml.safe_load(manifest_paths[0].read_text())
+    manifest_path = layout.manifest_path
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"no run_manifest for {t} at {manifest_path}")
+    mf = yaml.safe_load(manifest_path.read_text())
     prep_path = mf.get("stages", {}).get("aia_prep", {}).get(wavelength)
     if not prep_path:
         raise KeyError(f"manifest has no aia_prep[{wavelength}] for {t}")
 
-    event_dir = manifest_paths[0].parent
-    out_dir = event_dir / "aia"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"aia_{wavelength}A_fulldisk_for_roi.png"
+    out_path = layout.aia_fulldisk_for_roi_path(wavelength)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     m = Map(prep_path)
     fig = plt.figure(figsize=(9, 9))
     ax = fig.add_subplot(projection=m)
     m.plot(axes=ax, clip_interval=(1, 99.95) * u.percent)
-    ax.set_title(f"{m.wavelength.value:.0f} Å  {m.date.iso[:19]}  ({event_dir.name})")
+    ax.set_title(f"{m.wavelength.value:.0f} Å  {m.date.iso[:19]}  ({layout.event_short_id})")
+    # Major ticks every 500", minor every 100" (500/5).
+    for axis in (ax.coords[0], ax.coords[1]):
+        axis.set_ticks(spacing=500 * u.arcsec)
+        axis.set_minor_frequency(5)
+        axis.display_minor_ticks(True)
     ax.coords.grid(color="white", alpha=0.3, linestyle="--")
     fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    fig.savefig(out_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     return out_path
 

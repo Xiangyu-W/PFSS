@@ -27,6 +27,7 @@ DEFAULTS: dict = {
     "aia": {
         "wavelengths": ["94", "131", "171", "193", "211", "335"],
         "jsoc_notify": None,
+        "fetch_backend": "drms-as-is",   # "drms-as-is" | "fido"
         "do_psf_deconvolve": True,
         "pointing_window_hours": 12,
         "diagnostic_dpi": 200,

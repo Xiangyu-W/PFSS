@@ -142,7 +142,8 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
     final = {wl: (new_paths.get(wl) or existing[wl]) for wl in wavelengths}
     _verify_prep_drift(final, layout.target_time, tol_min * 60)
     payload = {wl: str(final[wl]) for wl in wavelengths}
-    payload.update({"images_dir": str(layout.aia_prep_images_dir), "do_psf": do_psf})
+    payload.update({"images_dir": str(layout.aia_prep_images_dir),
+                   "do_psf": do_psf, "skipped": False})
     mfst.update_stage(layout.manifest_path, "aia_prep", payload)
     log.info("stage_aia_prep complete; %d wavelengths in %s", len(wavelengths), layout.aia_prep_dir)
 

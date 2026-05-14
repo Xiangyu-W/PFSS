@@ -21,24 +21,41 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
 
     aia_cfg = cfg["aia"]
     wavelengths = aia_cfg["wavelengths"]
+    backend = aia_cfg.get("fetch_backend", "drms-as-is")
     layout.ensure_dirs()
 
-    log.info("resolving %d AIA L1 wavelengths at %s",
-             len(wavelengths), layout.target_time.iso)
+    log.info("resolving %d AIA L1 wavelengths at %s (backend=%s)",
+             len(wavelengths), layout.target_time.iso, backend)
 
     if force:
-        # `--force` forces re-download via JSOC; drop the local-first short-circuit
-        # by passing an empty data_dir to find_local (returns nothing), so all
-        # wavelengths are treated as missing.
+        # `--force` forces re-download via JSOC; drop both short-circuits.
         local: dict[str, str] = {}
     else:
+        # Manifest short-circuit: trust paths recorded by a previous aia_fetch
+        # if every file still exists on disk. Avoids re-globbing / network when
+        # the run state is already known good.
+        recorded = mfst.read(layout.manifest_path).get("stages", {}).get("aia_fetch", {})
+        cached = {wl: recorded[wl] for wl in wavelengths
+                  if isinstance(recorded.get(wl), str) and Path(recorded[wl]).exists()}
+        if len(cached) == len(wavelengths):
+            log.info("all %d L1 files resolved from manifest; skipping glob/network",
+                     len(wavelengths))
+            return {wl: Path(p) for wl, p in cached.items()}
         local = fetch_mod.find_local(layout.target_time, wavelengths, cfg["aia_data_dir"])
     missing = [wl for wl in wavelengths if wl not in local]
     if missing:
-        log.info("missing locally: %s; querying JSOC", missing)
-        local.update(fetch_mod.fetch_jsoc(
-            layout.target_time, missing, cfg["aia_data_dir"], aia_cfg.get("jsoc_notify") or "",
-        ))
+        notify = aia_cfg.get("jsoc_notify") or ""
+        log.info("missing locally: %s; backend=%s", missing, backend)
+        try:
+            local.update(fetch_mod._BACKENDS[backend](
+                layout.target_time, missing, cfg["aia_data_dir"], notify))
+        except Exception as exc:
+            if backend == "drms-as-is":
+                log.warning("as-is fetch failed (%s); falling back to fido", exc)
+                local.update(fetch_mod.fetch_jsoc_fido(
+                    layout.target_time, missing, cfg["aia_data_dir"], notify))
+            else:
+                raise
 
     still_missing = [wl for wl in wavelengths if wl not in local]
     if still_missing:
@@ -46,6 +63,7 @@ def run(cfg: dict, layout, force: bool = False) -> dict:
 
     payload = {wl: str(local[wl]) for wl in wavelengths}
     payload["data_dir"] = str(cfg["aia_data_dir"])
+    payload["backend"] = backend
     mfst.update_stage(layout.manifest_path, "aia_fetch", payload)
     log.info("aia_fetch complete; %d L1 files in %s", len(local), cfg["aia_data_dir"])
     return {wl: Path(p) for wl, p in local.items()}
